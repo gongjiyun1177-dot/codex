@@ -14,6 +14,9 @@ max-threads = 1
 [test-groups.windows_sandbox_legacy_sessions]
 max-threads = 1
 
+[test-groups.windows_process_spawn_integration]
+max-threads = 1
+
 [[profile.default.overrides]]
 # Do not add new tests here
 filter = 'test(rmcp_client) | test(humanlike_typing_1000_chars_appears_live_no_placeholder)'
@@ -44,3 +47,11 @@ test-group = 'core_apply_patch_cli_integration'
 # Serialize them to avoid exhausting Windows session/global desktop resources in CI.
 filter = 'package(codex-windows-sandbox) & test(legacy_)'
 test-group = 'windows_sandbox_legacy_sessions'
+
+[[profile.default.overrides]]
+# These Windows-only tests spawn Codex/exec-server subprocesses or initialize
+# thread state in ways that showed 30s timeout contention in recent CI probes.
+# app-server thread_fork cases are already serialized by app_server_integration.
+platform = 'cfg(windows)'
+filter = '(package(codex-core) & (test(cli_stream) | test(start_thread_uses_all_default_environments_from_codex_home))) | (package(codex-exec) & test(resume)) | (package(codex-exec-server) & test(connect_stdio_command_initializes_json_rpc_client_on_windows))'
+test-group = 'windows_process_spawn_integration'
