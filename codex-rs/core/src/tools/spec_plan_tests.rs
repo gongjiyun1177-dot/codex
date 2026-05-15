@@ -77,9 +77,18 @@ fn extension_tool_executor(
     name: &str,
     description: &str,
 ) -> Arc<dyn ToolExecutor<ExtensionToolCall>> {
+    extension_tool_executor_with_exposure(name, description, codex_tools::ToolExposure::Direct)
+}
+
+fn extension_tool_executor_with_exposure(
+    name: &str,
+    description: &str,
+    exposure: codex_tools::ToolExposure,
+) -> Arc<dyn ToolExecutor<ExtensionToolCall>> {
     struct SpecOnlyExtensionExecutor {
         name: String,
         description: String,
+        exposure: codex_tools::ToolExposure,
     }
 
     #[async_trait::async_trait]
@@ -106,6 +115,10 @@ fn extension_tool_executor(
             }))
         }
 
+        fn exposure(&self) -> codex_tools::ToolExposure {
+            self.exposure
+        }
+
         async fn handle(
             &self,
             _call: ExtensionToolCall,
@@ -117,6 +130,7 @@ fn extension_tool_executor(
     Arc::new(SpecOnlyExtensionExecutor {
         name: name.to_string(),
         description: description.to_string(),
+        exposure,
     })
 }
 
@@ -158,6 +172,59 @@ fn extension_tools_do_not_replace_builtin_tools() {
             .count(),
         1
     );
+}
+
+#[test]
+fn deferred_extension_tools_remain_model_visible() {
+    let model_info = search_capable_model_info();
+    let mut features = Features::with_defaults();
+    features.enable(Feature::ToolSearch);
+    let available_models = Vec::new();
+    let tools_config = ToolsConfig::new(&ToolsConfigParams {
+        model_info: &model_info,
+        available_models: &available_models,
+        features: &features,
+        image_generation_tool_auth_allowed: true,
+        web_search_mode: Some(WebSearchMode::Cached),
+        session_source: SessionSource::Cli,
+        permission_profile: &PermissionProfile::Disabled,
+        windows_sandbox_level: WindowsSandboxLevel::Disabled,
+    });
+    let extension_tool_executors = vec![extension_tool_executor_with_exposure(
+        "extension_echo",
+        "Echoes arguments through an extension tool.",
+        codex_tools::ToolExposure::Deferred,
+    )];
+
+    let (tools, registry) = build_specs_with_inputs_for_test(
+        &tools_config,
+        /*mcp_tools*/ None,
+        /*deferred_mcp_tools*/ None,
+        /*discoverable_tools*/ None,
+        &extension_tool_executors,
+        &[],
+    );
+
+    assert_eq!(
+        find_tool(&tools, "extension_echo").clone(),
+        ToolSpec::Function(ResponsesApiTool {
+            name: "extension_echo".to_string(),
+            description: "Echoes arguments through an extension tool.".to_string(),
+            strict: true,
+            parameters: JsonSchema::object(
+                BTreeMap::from([(
+                    "message".to_string(),
+                    JsonSchema::string(/*description*/ None),
+                )]),
+                Some(vec!["message".to_string()]),
+                Some(false.into()),
+            ),
+            output_schema: None,
+            defer_loading: None,
+        })
+    );
+    assert!(registry.has_tool(&ToolName::plain("extension_echo")));
+    assert_lacks_tool_name(&tools, TOOL_SEARCH_TOOL_NAME);
 }
 
 #[test]

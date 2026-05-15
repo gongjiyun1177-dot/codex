@@ -15,6 +15,7 @@ use crate::tools::registry::CoreToolRuntime;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
+use crate::tools::registry::ToolExposure;
 
 pub(crate) struct ExtensionToolAdapter(Arc<dyn codex_tools::ToolExecutor<ExtensionToolCall>>);
 
@@ -41,8 +42,10 @@ impl ToolExecutor<ToolInvocation> for ExtensionToolAdapter {
         self.0.spec()
     }
 
-    fn exposure(&self) -> crate::tools::registry::ToolExposure {
-        self.0.exposure()
+    fn exposure(&self) -> ToolExposure {
+        // Extension tools do not yet provide search metadata, so keep them in
+        // the model-visible list even if the shared executor requests deferral.
+        ToolExposure::Direct
     }
 
     fn supports_parallel_tool_calls(&self) -> bool {
