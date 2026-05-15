@@ -784,18 +784,24 @@ impl App {
             AppEvent::OpenFullAccessConfirmation {
                 preset,
                 return_to_permissions,
+                profile_selection,
             } => {
-                self.chat_widget
-                    .open_full_access_confirmation(preset, return_to_permissions);
+                self.chat_widget.open_full_access_confirmation(
+                    preset,
+                    return_to_permissions,
+                    profile_selection,
+                );
             }
             AppEvent::OpenWorldWritableWarningConfirmation {
                 preset,
+                profile_selection,
                 sample_paths,
                 extra_count,
                 failed_scan,
             } => {
                 self.chat_widget.open_world_writable_warning_confirmation(
                     preset,
+                    profile_selection,
                     sample_paths,
                     extra_count,
                     failed_scan,
@@ -832,10 +838,17 @@ impl App {
                     self.launch_external_editor(tui).await;
                 }
             }
-            AppEvent::OpenWindowsSandboxEnablePrompt { preset } => {
-                self.chat_widget.open_windows_sandbox_enable_prompt(preset);
+            AppEvent::OpenWindowsSandboxEnablePrompt {
+                preset,
+                profile_selection,
+            } => {
+                self.chat_widget
+                    .open_windows_sandbox_enable_prompt(preset, profile_selection);
             }
-            AppEvent::OpenWindowsSandboxFallbackPrompt { preset } => {
+            AppEvent::OpenWindowsSandboxFallbackPrompt {
+                preset,
+                profile_selection,
+            } => {
                 self.session_telemetry.counter(
                     "codex.windows_sandbox.fallback_prompt_shown",
                     /*inc*/ 1,
@@ -850,9 +863,12 @@ impl App {
                     );
                 }
                 self.chat_widget
-                    .open_windows_sandbox_fallback_prompt(preset);
+                    .open_windows_sandbox_fallback_prompt(preset, profile_selection);
             }
-            AppEvent::BeginWindowsSandboxElevatedSetup { preset } => {
+            AppEvent::BeginWindowsSandboxElevatedSetup {
+                preset,
+                profile_selection,
+            } => {
                 #[cfg(target_os = "windows")]
                 {
                     let permission_profile = preset.permission_profile.clone();
@@ -871,6 +887,7 @@ impl App {
                         tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
                             preset,
                             mode: WindowsSandboxEnableMode::Elevated,
+                            profile_selection,
                         });
                         return Ok(AppRunControl::Continue);
                     }
@@ -887,7 +904,10 @@ impl App {
                             );
                         })
                     else {
-                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt { preset });
+                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt {
+                            preset,
+                            profile_selection,
+                        });
                         return Ok(AppRunControl::Continue);
                     };
                     tokio::task::spawn_blocking(move || {
@@ -908,6 +928,7 @@ impl App {
                                 AppEvent::EnableWindowsSandboxForAgentMode {
                                     preset: preset.clone(),
                                     mode: WindowsSandboxEnableMode::Elevated,
+                                    profile_selection: profile_selection.clone(),
                                 }
                             }
                             Err(err) => {
@@ -939,7 +960,10 @@ impl App {
                                     error = %err,
                                     "failed to run elevated Windows sandbox setup"
                                 );
-                                AppEvent::OpenWindowsSandboxFallbackPrompt { preset }
+                                AppEvent::OpenWindowsSandboxFallbackPrompt {
+                                    preset,
+                                    profile_selection,
+                                }
                             }
                         };
                         tx.send(event);
@@ -947,10 +971,13 @@ impl App {
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    let _ = preset;
+                    let _ = (preset, profile_selection);
                 }
             }
-            AppEvent::BeginWindowsSandboxLegacySetup { preset } => {
+            AppEvent::BeginWindowsSandboxLegacySetup {
+                preset,
+                profile_selection,
+            } => {
                 #[cfg(target_os = "windows")]
                 {
                     let permission_profile = preset.permission_profile.clone();
@@ -972,7 +999,10 @@ impl App {
                             );
                         })
                     else {
-                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt { preset });
+                        tx.send(AppEvent::OpenWindowsSandboxFallbackPrompt {
+                            preset,
+                            profile_selection,
+                        });
                         return Ok(AppRunControl::Continue);
                     };
                     tokio::task::spawn_blocking(move || {
@@ -998,12 +1028,13 @@ impl App {
                         tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
                             preset,
                             mode: WindowsSandboxEnableMode::Legacy,
+                            profile_selection,
                         });
                     });
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    let _ = preset;
+                    let _ = (preset, profile_selection);
                 }
             }
             AppEvent::BeginWindowsSandboxGrantReadRoot { path } => {
@@ -1066,7 +1097,11 @@ impl App {
                         ));
                 }
             },
-            AppEvent::EnableWindowsSandboxForAgentMode { preset, mode } => {
+            AppEvent::EnableWindowsSandboxForAgentMode {
+                preset,
+                mode,
+                profile_selection,
+            } => {
                 #[cfg(target_os = "windows")]
                 {
                     self.chat_widget.clear_windows_sandbox_setup_status();
@@ -1111,7 +1146,6 @@ impl App {
                                         /*cwd*/ None,
                                         /*approval_policy*/ None,
                                         /*approvals_reviewer*/ None,
-                                        /*permission_profile*/ None,
                                         /*active_permission_profile*/ None,
                                         #[cfg(target_os = "windows")]
                                         Some(windows_sandbox_level),
@@ -1126,18 +1160,45 @@ impl App {
                                 self.app_event_tx.send(
                                     AppEvent::OpenWorldWritableWarningConfirmation {
                                         preset: Some(preset.clone()),
+                                        profile_selection: profile_selection.clone(),
                                         sample_paths,
                                         extra_count,
                                         failed_scan,
                                     },
                                 );
+                            } else if let Some(selection) = profile_selection {
+                                self.app_event_tx.send(AppEvent::CodexOp(
+                                    AppCommand::override_turn_context(
+                                        /*cwd*/ None,
+                                        /*approval_policy*/ None,
+                                        /*approvals_reviewer*/ None,
+                                        /*permission_profile*/ None,
+                                        #[cfg(target_os = "windows")]
+                                        Some(windows_sandbox_level),
+                                        /*model*/ None,
+                                        /*effort*/ None,
+                                        /*summary*/ None,
+                                        /*service_tier*/ None,
+                                        /*collaboration_mode*/ None,
+                                        /*personality*/ None,
+                                    ),
+                                ));
+                                self.apply_permission_profile_selection(selection).await;
+                                let _ = mode;
+                                self.chat_widget.add_plain_history_lines(vec![
+                                    Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
+                                    Line::from(vec![
+                                        "  ".into(),
+                                        "Codex can now safely edit files and execute commands in your computer"
+                                            .dark_gray(),
+                                    ]),
+                                ]);
                             } else {
                                 self.app_event_tx.send(AppEvent::CodexOp(
                                     AppCommand::override_turn_context(
                                         /*cwd*/ None,
                                         Some(AskForApproval::from(preset.approval)),
                                         Some(self.config.approvals_reviewer),
-                                        Some(preset.permission_profile.clone()),
                                         Some(preset.active_permission_profile.clone()),
                                         #[cfg(target_os = "windows")]
                                         Some(windows_sandbox_level),
@@ -1180,7 +1241,7 @@ impl App {
                 }
                 #[cfg(not(target_os = "windows"))]
                 {
-                    let _ = (preset, mode);
+                    let _ = (preset, mode, profile_selection);
                 }
             }
             AppEvent::PersistModelSelection { model, effort } => {
@@ -1434,7 +1495,7 @@ impl App {
                     return Ok(AppRunControl::Continue);
                 }
                 self.runtime_permission_profile_override =
-                    Some(self.config.permissions.permission_profile().clone());
+                    Some(RuntimePermissionProfileOverride::from_config(&self.config));
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
 
@@ -1469,6 +1530,9 @@ impl App {
                         );
                     }
                 }
+            }
+            AppEvent::SelectPermissionProfile(selection) => {
+                self.apply_permission_profile_selection(selection).await;
             }
             AppEvent::UpdateApprovalsReviewer(policy) => {
                 self.config.approvals_reviewer = policy;
