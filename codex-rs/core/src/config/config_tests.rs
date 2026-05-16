@@ -1453,6 +1453,30 @@ async fn permission_profile_override_populates_runtime_permissions() -> std::io:
     Ok(())
 }
 
+#[test]
+fn permission_snapshot_setter_preserves_permission_constraints() {
+    let initial_profile = PermissionProfile::read_only();
+    let mut permissions = Permissions::from_approval_and_profile(
+        Constrained::allow_any(AskForApproval::Never),
+        Constrained::allow_only(initial_profile.clone()),
+    )
+    .expect("initial permissions should satisfy constraints");
+
+    let err = permissions
+        .set_permission_profile_from_session_snapshot(PermissionProfileSnapshot::active(
+            PermissionProfile::workspace_write(),
+            ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE),
+        ))
+        .expect_err("workspace profile should violate read-only constraint");
+
+    assert_eq!(permissions.permission_profile(), &initial_profile);
+    assert_eq!(permissions.active_permission_profile(), None);
+    assert!(
+        matches!(err, ConstraintError::InvalidValue { .. }),
+        "expected invalid value constraint error, got {err:?}"
+    );
+}
+
 #[tokio::test]
 async fn permission_profile_override_preserves_managed_unrestricted_filesystem()
 -> std::io::Result<()> {
@@ -1905,9 +1929,28 @@ async fn workspace_profile_applies_rules_to_runtime_and_profile_workspace_roots(
     )
     .await?;
 
+    let cwd_abs = cwd.abs();
+    let runtime_root_abs = runtime_root.abs();
     let profile_root_abs = profile_root.abs();
+    assert_eq!(
+        config.workspace_roots,
+        vec![cwd_abs.clone(), runtime_root_abs.clone()]
+    );
+    assert_eq!(
+        config.permissions.workspace_roots(),
+        &[cwd_abs.clone(), runtime_root_abs.clone()]
+    );
+    assert_eq!(
+        config.effective_workspace_roots(),
+        vec![
+            cwd_abs.clone(),
+            runtime_root_abs.clone(),
+            profile_root_abs.clone()
+        ]
+    );
+
     let policy = config.permissions.file_system_sandbox_policy();
-    for root in [cwd.abs(), runtime_root.abs(), profile_root_abs.clone()] {
+    for root in [cwd_abs, runtime_root_abs, profile_root_abs.clone()] {
         assert!(
             policy.can_write_path_with_cwd(root.as_path(), cwd.as_path()),
             "expected workspace root to be writable, policy: {policy:?}"
@@ -4260,8 +4303,7 @@ fn web_search_mode_disabled_overrides_legacy_request() {
 #[test]
 fn web_search_mode_for_turn_uses_preference_for_read_only() {
     let web_search_mode = Constrained::allow_any(WebSearchMode::Cached);
-    let permission_profile =
-        PermissionProfile::from_legacy_sandbox_policy(&SandboxPolicy::new_read_only_policy());
+    let permission_profile = PermissionProfile::read_only();
     let mode = resolve_web_search_mode_for_turn(&web_search_mode, &permission_profile);
 
     assert_eq!(mode, WebSearchMode::Cached);
@@ -4858,12 +4900,14 @@ async fn to_mcp_config_preserves_apps_feature_from_config() -> std::io::Result<(
     let plugins_manager = PluginsManager::new(codex_home.path().to_path_buf());
 
     config.apps_mcp_path_override = Some("/custom/mcp".to_string());
+    config.apps_mcp_product_sku = Some("tpp".to_string());
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
     assert!(mcp_config.apps_enabled);
     assert_eq!(
         mcp_config.apps_mcp_path_override.as_deref(),
         Some("/custom/mcp")
     );
+    assert_eq!(mcp_config.apps_mcp_product_sku.as_deref(), Some("tpp"));
 
     let _ = config.features.disable(Feature::Apps);
     let mcp_config = config.to_mcp_config(&plugins_manager).await;
@@ -7673,6 +7717,7 @@ async fn test_precedence_fixture_with_o3_profile() -> std::io::Result<()> {
             personality: Some(Personality::Pragmatic),
             chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
             apps_mcp_path_override: None,
+            apps_mcp_product_sku: None,
             realtime_audio: RealtimeAudioConfig::default(),
             experimental_realtime_start_instructions: None,
             experimental_realtime_ws_base_url: None,
@@ -8123,6 +8168,7 @@ async fn test_precedence_fixture_with_gpt3_profile() -> std::io::Result<()> {
         personality: Some(Personality::Pragmatic),
         chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
         apps_mcp_path_override: None,
+        apps_mcp_product_sku: None,
         realtime_audio: RealtimeAudioConfig::default(),
         experimental_realtime_start_instructions: None,
         experimental_realtime_ws_base_url: None,
@@ -8287,6 +8333,7 @@ async fn test_precedence_fixture_with_zdr_profile() -> std::io::Result<()> {
         personality: Some(Personality::Pragmatic),
         chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
         apps_mcp_path_override: None,
+        apps_mcp_product_sku: None,
         realtime_audio: RealtimeAudioConfig::default(),
         experimental_realtime_start_instructions: None,
         experimental_realtime_ws_base_url: None,
@@ -8436,6 +8483,7 @@ async fn test_precedence_fixture_with_gpt5_profile() -> std::io::Result<()> {
         personality: Some(Personality::Pragmatic),
         chatgpt_base_url: "https://chatgpt.com/backend-api/".to_string(),
         apps_mcp_path_override: None,
+        apps_mcp_product_sku: None,
         realtime_audio: RealtimeAudioConfig::default(),
         experimental_realtime_start_instructions: None,
         experimental_realtime_ws_base_url: None,
@@ -8877,29 +8925,26 @@ async fn derive_sandbox_policy_preserves_windows_downgrade_for_unsupported_fallb
     let active_project = ProjectConfig {
         trust_level: Some(TrustLevel::Trusted),
     };
-    let constrained = Constrained::new(
-        PermissionProfile::from_legacy_sandbox_policy(&SandboxPolicy::new_workspace_write_policy()),
-        |candidate| {
-            if matches!(
-                candidate,
-                PermissionProfile::Managed {
-                    file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
-                    ..
-                } if entries
-                        .iter()
-                        .any(|entry| entry.access.can_write())
-            ) {
-                Ok(())
-            } else {
-                Err(ConstraintError::InvalidValue {
-                    field_name: "sandbox_mode",
-                    candidate: format!("{candidate:?}"),
-                    allowed: "[WorkspaceWrite]".to_string(),
-                    requirement_source: RequirementSource::Unknown,
-                })
-            }
-        },
-    )?;
+    let constrained = Constrained::new(PermissionProfile::workspace_write(), |candidate| {
+        if matches!(
+            candidate,
+            PermissionProfile::Managed {
+                file_system: ManagedFileSystemPermissions::Restricted { entries, .. },
+                ..
+            } if entries
+                    .iter()
+                    .any(|entry| entry.access.can_write())
+        ) {
+            Ok(())
+        } else {
+            Err(ConstraintError::InvalidValue {
+                field_name: "sandbox_mode",
+                candidate: format!("{candidate:?}"),
+                allowed: "[WorkspaceWrite]".to_string(),
+                requirement_source: RequirementSource::Unknown,
+            })
+        }
+    })?;
 
     let resolution = derive_legacy_sandbox_policy_for_test(
         &cfg,
@@ -9155,6 +9200,27 @@ path = "/custom/mcp"
         Some("/custom/mcp")
     );
     assert!(config.features.enabled(Feature::AppsMcpPathOverride));
+    Ok(())
+}
+
+#[tokio::test]
+async fn config_loads_apps_mcp_product_sku_from_toml() -> std::io::Result<()> {
+    let codex_home = TempDir::new()?;
+    let toml = r#"
+model = "gpt-5.4"
+apps_mcp_product_sku = "tpp"
+"#;
+    let cfg: ConfigToml =
+        toml::from_str(toml).expect("TOML deserialization should succeed for apps MCP SKU");
+
+    let config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    assert_eq!(config.apps_mcp_product_sku.as_deref(), Some("tpp"));
     Ok(())
 }
 

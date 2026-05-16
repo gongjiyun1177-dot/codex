@@ -459,24 +459,14 @@ async fn thread_start_params_include_review_policy_when_auto_review_is_enabled()
 }
 
 #[test]
-fn active_profile_selection_includes_extra_workspace_roots_as_modifications() {
-    let cwd = test_path_buf("/workspace/project").abs();
-    let extra_root = test_path_buf("/workspace/cache").abs();
-
-    let selection = permissions_selection_from_active_profile(
-        ActivePermissionProfile::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE),
-        cwd.as_path(),
-        &[cwd.clone(), extra_root.clone()],
-    );
+fn active_profile_selection_uses_profile_id_only() {
+    let selection = permissions_selection_from_active_profile(ActivePermissionProfile::new(
+        BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+    ));
 
     assert_eq!(
         selection,
-        PermissionProfileSelectionParams::Profile {
-            id: BUILT_IN_PERMISSION_PROFILE_WORKSPACE.to_string(),
-            modifications: Some(vec![
-                PermissionProfileModificationParams::AdditionalWritableRoot { path: extra_root }
-            ]),
-        }
+        PermissionProfileSelectionParams::new(BUILT_IN_PERMISSION_PROFILE_WORKSPACE)
     );
 }
 
@@ -538,7 +528,7 @@ async fn session_configured_from_thread_response_uses_review_policy_from_respons
 }
 
 #[tokio::test]
-async fn session_configured_from_thread_response_uses_permission_profile_from_response() {
+async fn session_configured_from_thread_response_uses_permission_profile_from_config() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");
     let config = ConfigBuilder::default()
@@ -547,13 +537,15 @@ async fn session_configured_from_thread_response_uses_permission_profile_from_re
         .build()
         .await
         .expect("build config");
-    let mut response = sample_thread_start_response();
-    response.permission_profile = Some(PermissionProfile::Disabled.into());
+    let response = sample_thread_start_response();
 
     let event = session_configured_from_thread_start_response(&response, &config)
         .expect("build bootstrap session configured event");
 
-    assert_eq!(event.permission_profile, PermissionProfile::Disabled);
+    assert_eq!(
+        event.permission_profile,
+        config.permissions.effective_permission_profile()
+    );
 }
 
 fn sample_thread_start_response() -> ThreadStartResponse {
@@ -583,6 +575,7 @@ fn sample_thread_start_response() -> ThreadStartResponse {
         model_provider: "openai".to_string(),
         service_tier: None,
         cwd: test_path_buf("/tmp").abs(),
+        runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: codex_app_server_protocol::AskForApproval::OnRequest,
         approvals_reviewer: codex_app_server_protocol::ApprovalsReviewer::AutoReview,
@@ -592,7 +585,6 @@ fn sample_thread_start_response() -> ThreadStartResponse {
             exclude_tmpdir_env_var: false,
             exclude_slash_tmp: false,
         },
-        permission_profile: None,
         active_permission_profile: None,
         reasoning_effort: None,
     }

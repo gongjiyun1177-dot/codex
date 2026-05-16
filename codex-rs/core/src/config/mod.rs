@@ -149,6 +149,7 @@ pub use managed_features::ManagedFeatures;
 pub use network_proxy_spec::NetworkProxySpec;
 pub use network_proxy_spec::StartedNetworkProxy;
 pub(crate) use permissions::resolve_permission_profile;
+pub use resolved_permission_profile::PermissionProfileSnapshot;
 pub(crate) use resolved_permission_profile::PermissionProfileState;
 
 const DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS: i64 = 200;
@@ -311,30 +312,13 @@ impl Permissions {
     ///
     /// This is a trusted-state bridge for consumers of `SessionConfigured`.
     /// Config loading and app-server selection should resolve named profiles
-    /// through config instead of constructing this pair directly.
+    /// through config instead of constructing a snapshot directly.
     pub fn set_permission_profile_from_session_snapshot(
         &mut self,
-        permission_profile: PermissionProfile,
-        active_permission_profile: Option<ActivePermissionProfile>,
+        snapshot: PermissionProfileSnapshot,
     ) -> ConstraintResult<()> {
-        self.set_permission_profile_from_session_snapshot_with_profile_workspace_roots(
-            permission_profile,
-            active_permission_profile,
-            Vec::new(),
-        )
-    }
-
-    pub fn set_permission_profile_from_session_snapshot_with_profile_workspace_roots(
-        &mut self,
-        permission_profile: PermissionProfile,
-        active_permission_profile: Option<ActivePermissionProfile>,
-        profile_workspace_roots: Vec<AbsolutePathBuf>,
-    ) -> ConstraintResult<()> {
-        self.permission_profile_state.set_active_permission_profile(
-            permission_profile,
-            active_permission_profile,
-            profile_workspace_roots,
-        )
+        self.permission_profile_state
+            .set_permission_profile_snapshot(snapshot)
     }
 
     /// Replace the current permission constraints with a trusted session
@@ -342,26 +326,12 @@ impl Permissions {
     /// after their local config constraints reject the snapshot.
     pub fn replace_permission_profile_from_session_snapshot(
         &mut self,
-        permission_profile: Constrained<PermissionProfile>,
-        active_permission_profile: Option<ActivePermissionProfile>,
+        snapshot: PermissionProfileSnapshot,
     ) -> ConstraintResult<()> {
-        self.replace_permission_profile_from_session_snapshot_with_profile_workspace_roots(
+        let permission_profile = Constrained::allow_only(snapshot.permission_profile().clone());
+        self.permission_profile_state = PermissionProfileState::from_constrained_resolved(
             permission_profile,
-            active_permission_profile,
-            Vec::new(),
-        )
-    }
-
-    pub fn replace_permission_profile_from_session_snapshot_with_profile_workspace_roots(
-        &mut self,
-        permission_profile: Constrained<PermissionProfile>,
-        active_permission_profile: Option<ActivePermissionProfile>,
-        profile_workspace_roots: Vec<AbsolutePathBuf>,
-    ) -> ConstraintResult<()> {
-        self.permission_profile_state = PermissionProfileState::from_constrained_active_profile(
-            permission_profile,
-            active_permission_profile,
-            profile_workspace_roots,
+            snapshot.into_resolved_permission_profile(),
         )?;
         Ok(())
     }
@@ -871,6 +841,9 @@ pub struct Config {
     /// Optional path override for the host-owned apps MCP server.
     pub apps_mcp_path_override: Option<String>,
 
+    /// Optional product SKU forwarded to the host-owned apps MCP server.
+    pub apps_mcp_product_sku: Option<String>,
+
     /// Machine-local realtime audio device preferences used by realtime voice.
     pub realtime_audio: RealtimeAudioConfig,
 
@@ -1231,6 +1204,13 @@ impl Config {
         Ok(())
     }
 
+    pub fn effective_workspace_roots(&self) -> Vec<AbsolutePathBuf> {
+        let mut workspace_roots = self.workspace_roots.clone();
+        workspace_roots.extend(self.permissions.profile_workspace_roots().iter().cloned());
+        dedupe_absolute_paths(&mut workspace_roots);
+        workspace_roots
+    }
+
     pub fn to_models_manager_config(&self) -> ModelsManagerConfig {
         ModelsManagerConfig {
             model_context_window: self.model_context_window,
@@ -1287,6 +1267,7 @@ impl Config {
         McpConfig {
             chatgpt_base_url: self.chatgpt_base_url.clone(),
             apps_mcp_path_override: self.apps_mcp_path_override.clone(),
+            apps_mcp_product_sku: self.apps_mcp_product_sku.clone(),
             codex_home: self.codex_home.to_path_buf(),
             mcp_oauth_credentials_store_mode: self.mcp_oauth_credentials_store_mode,
             mcp_oauth_callback_port: self.mcp_oauth_callback_port,
@@ -2671,8 +2652,6 @@ impl Config {
                 configured_workspace_roots.extend(sandbox_workspace_write.writable_roots.clone());
             }
             dedupe_absolute_paths(&mut configured_workspace_roots);
-            workspace_roots.extend(configured_workspace_roots.iter().cloned());
-            dedupe_absolute_paths(&mut workspace_roots);
             file_system_sandbox_policy = file_system_sandbox_policy
                 .with_materialized_project_roots_for_workspace_roots(&configured_workspace_roots);
             let mut permission_profile = if let Some(permission_profile) =
@@ -3414,6 +3393,7 @@ impl Config {
                 .or(cfg.chatgpt_base_url)
                 .unwrap_or("https://chatgpt.com/backend-api/".to_string()),
             apps_mcp_path_override,
+            apps_mcp_product_sku: cfg.apps_mcp_product_sku.clone(),
             realtime_audio: cfg
                 .audio
                 .map_or_else(RealtimeAudioConfig::default, |audio| RealtimeAudioConfig {
